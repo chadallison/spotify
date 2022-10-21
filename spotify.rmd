@@ -1,0 +1,431 @@
+---
+title: "spotify"
+author: "Chad Allison"
+date: "8/13/2021"
+output: html_document
+---
+
+```{r message = F, warning = F, include = F}
+library(jsonlite)
+library(lubridate)
+library(gghighlight)
+library(spotifyr)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(plotly)
+
+options(scipen = 999)
+theme_set(theme_minimal())
+```
+
+```{r}
+streamHistory0 = fromJSON("StreamingHistory0.json", flatten = T)
+streamHistory1 = fromJSON("StreamingHistory1.json", flatten = T)
+streamHistory2 = fromJSON("StreamingHistory2.json", flatten = T)
+df = rbind(streamHistory0, streamHistory1, streamHistory2)
+```
+
+```{r}
+# filtering to get rid of most podcasts
+
+pod_artists = c("Calming White Noise", "Last Podcast On The Left", "Relaxing White Noise",
+                "The Joe Rogan Experience", "American Sport", "Huberman Lab", "Serial Productions",
+                "NFR Podcast", "Titus & Tate", "Dissect", "No Laying Up - Golf Podcast",
+                "Lights Camera Barstool", "Crime Junkie", "SmartLess", "Serial Killers",
+                "Cults", "The Fried Egg Golf Podcast", "The Golfers Journal Podcast")
+                # i'm sure there are many more but this covers the most listened to
+
+df = df |>
+  filter(!artistName %in% c(pod_artists))
+```
+
+```{r}
+# adding the date as a variable
+
+df = df |>
+  mutate(date = as.Date(endTime))
+```
+
+```{r}
+df |>
+  filter(date >= "2022-06-10") |>
+  group_by(artistName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(10) |>
+  ggplot(aes(reorder(artistName, time), time)) +
+  geom_col(fill = "springgreen4") +
+  coord_flip() +
+  labs(x = NULL)
+
+df |>
+  filter(date >= "2022-06-10") |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(10) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "lightsteelblue2") +
+  coord_flip() +
+  labs(x = NULL)
+```
+
+```{r}
+top10_artists = df |>
+  group_by(artistName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(10) |>
+  pull(artistName)
+
+top_artists_top_song = data.frame(artist = top10_artists, top_song = NA)
+
+for (i in 1:10) {
+
+  name = df |>
+    filter(artistName == top10_artists[i]) |>
+    group_by(trackName) |>
+    summarise(time = sum(msPlayed)) |>
+    arrange(desc(time)) |>
+    head(1) |>
+    pull(trackName)
+
+  top_artists_top_song$top_song[i] = name
+
+}
+
+top_artists_top_song$isTopTrack = "yes"
+
+top_artists_top_song = top_artists_top_song |>
+  rename(artistName = artist,
+         trackName = top_song)
+
+join_with_label = left_join(df, top_artists_top_song, by = c("artistName", "trackName")) |>
+# left_join(df, top_artists_top_song, by = c("artistName", "trackName")) |>
+  filter(artistName %in% top10_artists) |>
+  group_by(artistName, trackName) |>
+  summarise(msPlayed = sum(msPlayed),
+            .groups = "drop") |>
+  mutate(isTopTrack = ifelse(trackName %in% top_artists_top_song$trackName, "yes", "no"),
+         plot_label = ifelse(isTopTrack == "yes", trackName, " "))
+
+df |>
+  filter(artistName %in% top10_artists) |>
+  group_by(artistName, trackName) |>
+  summarise(time = sum(msPlayed),
+            .groups = "drop") |> # 732 rows, this is how long it should be
+  inner_join(join_with_label, by = c("artistName", "trackName")) |>
+  mutate(artistName = factor(artistName, levels = rev.default(top10_artists))) |>
+  ggplot(aes(artistName, time)) +
+  geom_boxplot(aes(fill = artistName), outlier.alpha = 0.75) +
+  geom_text(aes(label = plot_label), size = 3, hjust = -0.1, fontface = "italic") +
+  labs(x = NULL, y = "Listen time", fill = NULL,
+       title = "Which artists have high listen times because of a few songs?",
+       subtitle = "Artists ordered top-to-bottom with regard to total listen time") +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5, size = 9, vjust = 2),
+        axis.text.x = element_blank(),
+        # axis.text.y = element_blank(),
+        legend.position = "none") +
+  coord_flip(ylim = c(0, 30000000))
+```
+
+```{r}
+artist_totals = df |>
+  filter(artistName %in% top10_artists) |>
+  group_by(artistName) |>
+  summarise(time = sum(msPlayed))
+
+df |>
+  filter(artistName %in% top10_artists) |>
+  group_by(artistName, trackName) |>
+  summarise(time = sum(msPlayed),
+            .groups = "drop") |>
+  left_join(artist_totals, by = "artistName") |>
+  rename(track_time = time.x,
+         artist_time = time.y) |>
+  mutate(ratio = round(track_time / artist_time, 2)) |>
+  arrange(desc(ratio))
+```
+
+```{r}
+# top songs of all time, year, 3 months, etc.
+## and artists
+
+# for shortening the labels lol
+df = df |>
+  mutate(trackName = str_replace_all(trackName, "Taylor's Version", "TV"),
+         trackName = str_replace_all(trackName, "Taylor’s Version", "TV"),
+         trackName = str_replace_all(trackName, "From The Vault", "FtV"))
+
+
+# past year
+df |>
+  filter(date >= as.Date("2022-10-13") - 365) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(25) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "lightsteelblue3") +
+  coord_flip() +
+  labs(x = NULL, title = "top tracks of the past year") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# past six months
+df |>
+  filter(date >= as.Date("2022-10-13") - 183) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(25) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "thistle3") +
+  coord_flip() +
+  labs(x = NULL, title = "top tracks of the past six months") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# past three months
+df |>
+  filter(date >= as.Date("2022-10-13") - 92) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(25) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "lightgoldenrod3") +
+  coord_flip() +
+  labs(x = NULL, title = "top tracks of the past three months") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# past month
+df |>
+  filter(date >= as.Date("2022-10-13") - 31) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(25) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "darkseagreen3") +
+  coord_flip() +
+  labs(x = NULL, title = "top tracks of the past month") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# past week
+df |>
+  filter(date >= as.Date("2022-10-13") - 14,
+         !str_detect(artistName, "Up First")) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(25) |>
+  ggplot(aes(reorder(trackName, time), time)) +
+  geom_col(fill = "lightpink3") +
+  coord_flip() +
+  labs(x = NULL, title = "top tracks of the past week") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+
+
+
+
+### HERE IS WHERE THE OLD STUFF STARTS ### ------------------------------------------------------------------
+
+```{r eval = F}
+# ADDING DATE AND TIMING
+mySpotify <- streamHistory %>% 
+  as_tibble() %>% 
+  mutate_at("endTime", ymd_hm) %>% 
+  mutate(endTime = endTime - hours(6)) %>% 
+  mutate(date = floor_date(endTime, "day") %>% as_date, seconds = msPlayed / 1000, minutes = seconds / 60)
+
+# PLAYBACK ACTIVITY PER WEEK AND HOURS
+streamingHours <- mySpotify %>% 
+  filter(date >= "2020-01-01") %>% 
+  group_by(date) %>% 
+  group_by(date = floor_date(date, "week")) %>%
+  summarize(hours = sum(minutes) / 60) %>% 
+  arrange(date) %>% 
+  ggplot(aes(x = date, y = hours)) + 
+  geom_col(aes(fill = hours)) +
+  scale_fill_gradient(low = "seashell", high = "springgreen4") + 
+  labs(x= "Date", y= "Hours of music playback") + 
+  ggtitle("On what dates I've listened to more or less music on Spotify?", "Playback activity per week")
+
+streamingHours
+```
+
+```{r eval = F}
+# MOST LISTENED ARTISTS (MORE THAN 3 HOURS)
+minutesMostListened <- mySpotify %>% 
+  filter(date >= "2020-01-01") %>% 
+  group_by(artistName) %>% 
+  summarize(minutesListened = sum(minutes)) %>% 
+  filter(minutesListened >= 400) %>%
+  ggplot(aes(x = artistName, y = minutesListened)) + 
+  geom_col(aes(fill = minutesListened)) +
+  scale_fill_gradient(low = "yellow", high = "red") + 
+  labs(x= "Artist", y= "Minutes of music playback") + 
+  ggtitle("What were the most listened artists on my Spotify?", "> 3 hours listened") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  coord_flip()
+minutesMostListened
+```
+
+```{r eval = F}
+# PLAYBACK ACTIVITY BY DATE AND TIME OF DAY
+timeDay <- mySpotify %>% 
+  filter(date >= "2020-01-01") %>% 
+  group_by(date, hour = hour(endTime)) %>% 
+  summarize(minutesListened = sum(minutes),
+            .groups = "drop") %>% 
+  ggplot(aes(x = hour, y = date, fill = minutesListened)) + 
+  geom_tile() + 
+  labs(x= "Time of the day", y= "Date") + 
+  ggtitle("When has there been more playback activity on my Spotify?", "Activity by date and time of day") +
+  scale_fill_gradient(low = "lightsteelblue2", high = "seagreen4")
+timeDay
+```
+
+```{r eval = F}
+hoursDay = mySpotify %>% 
+  filter(date >= "2019-01-01") %>% 
+  group_by(date, hour = hour(endTime), weekday = wday(date, label = TRUE))%>% 
+  summarize(minutesListened = sum(minutes),
+            .groups = "drop")
+
+hoursDay %>% 
+  ggplot(aes(x = hour, y = minutesListened, group = date)) + 
+  geom_col(fill = "lightsteelblue3") +
+  labs(x= "Time of the day", y= "Minutes of music playback") + 
+  ggtitle("What time of day I've listened to the most music on Spotify?", "Activity from 0 to 24 hours")
+```
+
+```{r eval = F}
+# PLAYBACK ACTIVITY BY TIME OF THE DAY AND WEEKDAY
+hoursDay %>% 
+  group_by(weekday, hour) %>% 
+  summarize(minutes = sum(minutesListened),
+            .groups = "drop") %>% 
+  ggplot(aes(x = hour, weekday, fill = minutes)) + 
+  geom_tile() + 
+  scale_fill_gradient(low = "lightsteelblue1", high = "springgreen4") +
+  labs(x= "Time of the day", y= "Weekday") + 
+  ggtitle("What weekday and time of day I've listened to the most music on Spotify?", "Weekly activity from 0 to 24 hours")
+```
+
+```{r eval = F}
+# PLAYBACK ACTIVITY BY TIME OF THE DAY AND WEEKDAY - LINE CHART
+weekDay <- hoursDay %>% 
+  group_by(weekday, hour) %>% 
+  summarize(minutes = sum(minutesListened), .groups = "drop") %>% 
+  ggplot(aes(x = hour, y = minutes, color = weekday)) + 
+  geom_line() +
+  labs(x= "Time of the day", y= "Minutes of music playback") + 
+  ggtitle("What weekday and time of day I've listened to the most music on Spotify?", "Line chart - Weekly activity from 0 to 24 hours") 
+weekDay
+```
+
+```{r eval = F}
+# PLAYBACK ACTIVITY BY DAY TYPE
+dayType <- hoursDay %>% 
+  mutate(day_type = if_else(weekday %in% c("Sat", "Sun"), "weekend", "weekday")) %>% 
+  group_by(day_type, hour) %>% 
+  summarize(minutes = sum(minutesListened), .groups = "drop") %>% 
+  ggplot(aes(x = hour, y = minutes, color = day_type)) + 
+  geom_line() +
+  labs(x= "Time of the day", y= "Minutes of music playback") + 
+  ggtitle("What day type I've listened to the most music on Spotify?", "Weekday and weekend activity from 0 to 24 hours") 
+dayType
+```
+
+```{r eval = F}
+streamHistory |>
+  filter(!str_detect(trackName, "Sleep") &
+           !str_detect(trackName, "Relaxing Ocean") &
+           !str_detect(trackName, "Episode") &
+           !str_detect(trackName, "Aaron Rodgers")) |>
+  mutate(date = as.Date(endTime)) |>
+  filter(year(date) == 2022) |>
+  group_by(artistName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(12) |>
+  ggplot(aes(reorder(artistName, time), time)) +
+  geom_col(fill = "springgreen4") +
+  coord_flip() +
+  labs(x = NULL, y = "Listen time")
+```
+
+```{r eval = F}
+df = streamHistory
+
+top_10_2022 = df |>
+  filter(!artistName %in% c("Calming White Noise", "Last Podcast On The Left", "Relaxing White Noise")) |>
+  mutate(date = as.Date(endTime)) |>
+  filter(year(date) == 2022) |>
+  group_by(artistName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  head(5) |>
+  pull(artistName)
+
+fig = df |>
+  filter(artistName %in% top_10_2022) |>
+  mutate(date = as.Date(endTime)) |>
+  filter(year(date) == 2022) |>
+  group_by(artistName, week(date)) |>
+  summarise(time = sum(msPlayed),
+            .groups = "drop") |>
+  rename(week = `week(date)`) |>
+  ggplot(aes(week, time)) +
+  geom_line(aes(col = artistName))
+
+ggplotly(fig)
+```
+
+```{r eval = F}
+top_tracks = df |>
+  mutate(date = as.Date(endTime)) |>
+  filter(year(date) == 2022) |>
+  group_by(trackName) |>
+  summarise(time = sum(msPlayed)) |>
+  arrange(desc(time)) |>
+  filter(!str_detect(trackName, "Thunderstorm"),
+         !str_detect(trackName, "Tropical Beach")) |>
+  head(10) |>
+  pull(trackName)
+
+fig = df |>
+  filter(trackName %in% top_tracks) |>
+  mutate(date = as.Date(endTime)) |>
+  filter(year(date) == 2022) |>
+  group_by(date, trackName) |>
+  summarise(time = sum(msPlayed),
+            .groups = "drop") |>
+  ggplot(aes(date, time)) +
+  geom_line(aes(col = trackName))
+
+ggplotly(fig)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
